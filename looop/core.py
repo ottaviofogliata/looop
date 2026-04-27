@@ -70,12 +70,15 @@ class IterationResult:
     iteration: int
     codex_result: CommandResult
     changed: bool
+    changed_files_count: int
     done: bool
     stop_reason: str | None
     log_file: Path
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+IterationStartedCallback = Callable[[int, Path], None]
+IterationCompletedCallback = Callable[[IterationResult], None]
 
 
 def run_command(
@@ -318,6 +321,37 @@ def worktree_changed(before: WorktreeSnapshot, after: WorktreeSnapshot) -> bool:
     return before != after
 
 
+def changed_paths(before: WorktreeSnapshot, after: WorktreeSnapshot) -> tuple[str, ...]:
+    """Return paths that differ between two worktree snapshots."""
+
+    paths: set[str] = set()
+    before_files = dict(before.files)
+    after_files = dict(after.files)
+    for path in before_files.keys() | after_files.keys():
+        if before_files.get(path) != after_files.get(path):
+            paths.add(path)
+
+    for line in set(before.status).symmetric_difference(after.status):
+        paths.update(_status_line_paths(line))
+
+    return tuple(sorted(paths))
+
+
+def _status_line_paths(line: str) -> tuple[str, ...]:
+    path_text = line[3:] if len(line) > 3 else ""
+    if not path_text:
+        return ()
+    if " -> " in path_text:
+        return tuple(part.strip().strip('"') for part in path_text.split(" -> ") if part.strip())
+    return (path_text.strip().strip('"'),)
+
+
+def changed_path_count(before: WorktreeSnapshot, after: WorktreeSnapshot) -> int:
+    """Return the number of changed paths between two worktree snapshots."""
+
+    return len(changed_paths(before, after))
+
+
 def next_iteration_number(log_dir: Path) -> int:
     """Return the next available iteration number for log naming."""
 
@@ -375,7 +409,69 @@ def write_iteration_log(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def run_loop(config: RunConfig, *, runner: Runner = subprocess.run) -> list[IterationResult]:
+def start_iteration_log(*, path: Path, iteration: int, codex_command: Sequence[str]) -> None:
+    """Create an iteration log before Codex starts."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"timestamp: {datetime.now(timezone.utc).isoformat()}",
+        f"iteration: {iteration}",
+        f"codex_command: {shlex.join(str(part) for part in codex_command)}",
+        "",
+        "== codex output (live) ==",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def append_iteration_log_output(*, path: Path, stream_name: str, text: str) -> None:
+    """Append one or more output lines to a live iteration log."""
+
+    with path.open("a", encoding="utf-8") as handle:
+        for line in text.splitlines() or [""]:
+            handle.write(f"[{stream_name}] {line}\n")
+
+
+def finish_iteration_log(
+    *,
+    path: Path,
+    codex_result: CommandResult,
+    final_result: str,
+) -> None:
+    """Append captured output, if needed, and the final iteration result."""
+
+    include_captured_output = not _has_live_iteration_output(path)
+    lines: list[str] = []
+    if include_captured_output:
+        lines.extend(
+            [
+                "",
+                "== codex stdout ==",
+                codex_result.stdout,
+                "",
+                "== codex stderr ==",
+                codex_result.stderr,
+            ]
+        )
+    lines.extend(["", "== final result ==", final_result, ""])
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines))
+
+
+def _has_live_iteration_output(path: Path) -> bool:
+    if not path.exists():
+        return False
+    with path.open(encoding="utf-8") as handle:
+        return any(line.startswith(("[stdout] ", "[stderr] ")) for line in handle)
+
+
+def run_loop(
+    config: RunConfig,
+    *,
+    runner: Runner = subprocess.run,
+    on_iteration_started: IterationStartedCallback | None = None,
+    on_iteration_completed: IterationCompletedCallback | None = None,
+) -> list[IterationResult]:
     """Run Codex repeatedly until a configured stop condition is reached."""
 
     repo_root = require_git_repo()
@@ -411,16 +507,18 @@ def run_loop(config: RunConfig, *, runner: Runner = subprocess.run) -> list[Iter
             final_result="dry-run: Codex was not executed",
         )
         dry_result = CommandResult(command, 0, "", "")
-        return [
-            IterationResult(
-                iteration=iteration,
-                codex_result=dry_result,
-                changed=False,
-                done=has_done_marker(progress_file),
-                stop_reason="dry-run",
-                log_file=log_file,
-            )
-        ]
+        dry_iteration_result = IterationResult(
+            iteration=iteration,
+            codex_result=dry_result,
+            changed=False,
+            changed_files_count=0,
+            done=has_done_marker(progress_file),
+            stop_reason="dry-run",
+            log_file=log_file,
+        )
+        if on_iteration_completed:
+            on_iteration_completed(dry_iteration_result)
+        return [dry_iteration_result]
 
     results: list[IterationResult] = []
     iteration = next_iteration_number(log_dir)
@@ -428,18 +526,20 @@ def run_loop(config: RunConfig, *, runner: Runner = subprocess.run) -> list[Iter
         prompt = prompt_file.read_text(encoding="utf-8")
         command = build_codex_command(config.codex_bin, config.codex_args, prompt)
         log_file = log_dir / f"iteration-{iteration}.log"
+        start_iteration_log(path=log_file, iteration=iteration, codex_command=command)
         before = take_worktree_snapshot(repo_root, exclude_roots=(log_dir,))
+        if on_iteration_started:
+            on_iteration_started(iteration, log_file)
         codex_result = run_command(command, cwd=repo_root, runner=runner)
+        after = take_worktree_snapshot(repo_root, exclude_roots=(log_dir,))
 
         stop_reason: str | None = None
-        changed = False
+        changed = worktree_changed(before, after)
+        changed_files_count = changed_path_count(before, after)
 
         if codex_result.returncode != 0:
             stop_reason = f"codex exited with status {codex_result.returncode}"
         else:
-            after = take_worktree_snapshot(repo_root, exclude_roots=(log_dir,))
-            changed = worktree_changed(before, after)
-
             if stop_reason is None and config.stop_on_no_changes and not changed:
                 stop_reason = "no files changed"
 
@@ -452,13 +552,12 @@ def run_loop(config: RunConfig, *, runner: Runner = subprocess.run) -> list[Iter
         done = has_done_marker(progress_file)
         final_result = (
             f"changed={changed}\n"
+            f"changed_files={changed_files_count}\n"
             f"done={done}\n"
             f"stop_reason={stop_reason or 'continue'}"
         )
-        write_iteration_log(
+        finish_iteration_log(
             path=log_file,
-            iteration=iteration,
-            codex_command=command,
             codex_result=codex_result,
             final_result=final_result,
         )
@@ -467,11 +566,14 @@ def run_loop(config: RunConfig, *, runner: Runner = subprocess.run) -> list[Iter
             iteration=iteration,
             codex_result=codex_result,
             changed=changed,
+            changed_files_count=changed_files_count,
             done=done,
             stop_reason=stop_reason,
             log_file=log_file,
         )
         results.append(result)
+        if on_iteration_completed:
+            on_iteration_completed(result)
 
         if stop_reason is not None:
             break

@@ -133,6 +133,7 @@ Without `--yes`, Looop asks for confirmation before deleting `.looop/logs/`.
 --progress-file <path>
 --log-dir <path>
 --dry-run
+--verbose / --show-codex-output
 ```
 
 Useful examples:
@@ -140,11 +141,13 @@ Useful examples:
 ```bash
 looop run --codex-args "--model gpt-5.1-codex-max"
 looop run --codex-args "--config model_reasoning_effort=high"
+looop run --verbose
 looop status
 looop clean --yes
 
 lp run --codex-args "--model gpt-5.1-codex-max"
 lp run --codex-args "--config model_reasoning_effort=high"
+lp run --show-codex-output
 lp status
 lp clean --yes
 ```
@@ -169,6 +172,12 @@ By default, Looop invokes Codex as if these Codex options were present:
 ```
 
 Use `--codex-args` to override any of these defaults.
+
+During `looop run`, Looop prints the active iteration and log path, creates that
+log before Codex starts, updates it as Codex emits output, shows a spinner with
+elapsed time while Codex is running, and prints a compact result block after each
+iteration. By default, Codex output is captured into the iteration log. Pass
+`--verbose` or `--show-codex-output` to also stream Codex stdout and stderr live.
 
 ## The `.looop/` Directory
 
@@ -276,7 +285,9 @@ Each iteration writes a local log file:
 .looop/logs/iteration-3.log
 ```
 
-Logs include the timestamp, iteration number, Codex command, Codex stdout and stderr, and the final iteration result. Runtime logs are local artifacts and are ignored by the package's repository `.gitignore`.
+Logs include the timestamp, iteration number, Codex command, live Codex stdout
+and stderr lines, and the final iteration result. Runtime logs are local
+artifacts and are ignored by the package's repository `.gitignore`.
 
 ## Safety Notes
 

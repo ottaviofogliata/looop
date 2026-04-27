@@ -162,18 +162,82 @@ class CoreTests(unittest.TestCase):
             )
             fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
 
+            completed: list[core.IterationResult] = []
             results = core.run_loop(
                 core.RunConfig(
                     max_iterations=3,
                     codex_bin=str(fake_codex),
-                )
+                ),
+                on_iteration_completed=completed.append,
             )
 
             self.assertEqual(len(results), 1)
+            self.assertEqual(completed, results)
             self.assertTrue(results[0].changed)
+            self.assertEqual(results[0].changed_files_count, 2)
             self.assertTrue(results[0].done)
             self.assertEqual(results[0].stop_reason, DONE_MARKER)
             self.assertTrue((repo / ".looop/logs/iteration-1.log").is_file())
+
+    def test_run_loop_creates_iteration_log_before_codex_finishes(self) -> None:
+        with temp_cwd() as repo:
+            git_init(repo)
+            fake_codex = repo / "fake-codex"
+            fake_codex.write_text("#!/bin/sh\n", encoding="utf-8")
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+            seen: dict[str, str | bool] = {}
+
+            def fake_runner(
+                args: list[str] | str,
+                *,
+                cwd: str,
+                shell: bool,
+                text: bool,
+                capture_output: bool,
+            ) -> subprocess.CompletedProcess[str]:
+                log_file = repo / ".looop/logs/iteration-1.log"
+                seen["exists"] = log_file.is_file()
+                seen["text"] = log_file.read_text(encoding="utf-8")
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    stdout="stdout-after\n",
+                    stderr="stderr-after\n",
+                )
+
+            results = core.run_loop(
+                core.RunConfig(max_iterations=1, codex_bin=str(fake_codex)),
+                runner=fake_runner,
+            )
+
+            log_text = (repo / ".looop/logs/iteration-1.log").read_text(encoding="utf-8")
+            self.assertEqual(len(results), 1)
+            self.assertTrue(seen["exists"])
+            self.assertIn("== codex output (live) ==", str(seen["text"]))
+            self.assertIn("== codex stdout ==", log_text)
+            self.assertIn("stdout-after", log_text)
+            self.assertIn("stderr-after", log_text)
+
+    def test_run_loop_counts_changes_when_codex_fails(self) -> None:
+        with temp_cwd() as repo:
+            git_init(repo)
+            fake_codex = repo / "fake-codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "from pathlib import Path\n"
+                "Path('failed-change.txt').write_text('changed', encoding='utf-8')\n"
+                "sys.exit(7)\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            results = core.run_loop(core.RunConfig(max_iterations=3, codex_bin=str(fake_codex)))
+
+            self.assertEqual(len(results), 1)
+            self.assertTrue(results[0].changed)
+            self.assertEqual(results[0].changed_files_count, 1)
+            self.assertEqual(results[0].stop_reason, "codex exited with status 7")
 
 
 if __name__ == "__main__":

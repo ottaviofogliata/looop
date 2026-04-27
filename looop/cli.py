@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
+from typing import TextIO
 
 from . import __version__
 from .core import (
     DEFAULT_LOG_DIR,
+    IterationResult,
     LooopError,
     RunConfig,
+    append_iteration_log_output,
     clean_logs,
     find_git_root,
     git_status_short,
@@ -59,6 +65,13 @@ def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     run_parser.add_argument("--progress-file", type=Path, default=Path(".looop/progress.md"))
     run_parser.add_argument("--log-dir", type=Path, default=Path(".looop/logs"))
     run_parser.add_argument("--dry-run", action="store_true", help="show what would run without executing Codex")
+    run_parser.add_argument(
+        "--verbose",
+        "--show-codex-output",
+        dest="verbose",
+        action="store_true",
+        help="stream Codex stdout and stderr while it runs",
+    )
     run_parser.set_defaults(func=cmd_run)
 
     status_parser = subparsers.add_parser("status", help="show Looop and repository status")
@@ -105,24 +118,195 @@ def cmd_run(args: argparse.Namespace) -> int:
         if status:
             print(status, file=sys.stderr)
 
-    results = run_loop(config)
+    reporter = TerminalRunReporter(max_iterations=config.max_iterations, verbose=args.verbose)
+    results = run_loop(
+        config,
+        runner=reporter.run_command,
+        on_iteration_started=reporter.iteration_started,
+        on_iteration_completed=reporter.iteration_completed,
+    )
     if not results:
         print("No iterations were run.")
         return 0
-
-    for result in results:
-        print(
-            "iteration "
-            f"{result.iteration}: changed={result.changed} "
-            f"done={result.done} log={result.log_file}"
-        )
-        if result.stop_reason:
-            print(f"stopped: {result.stop_reason}")
 
     last = results[-1]
     if last.codex_result.returncode != 0:
         return last.codex_result.returncode
     return 0
+
+
+class TerminalRunReporter:
+    """Terminal feedback for `looop run`."""
+
+    _FRAMES = ("-", "\\", "|", "/")
+
+    def __init__(
+        self,
+        *,
+        max_iterations: int,
+        verbose: bool,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
+    ) -> None:
+        self.max_iterations = max_iterations
+        self.verbose = verbose
+        self.stdout = stdout or sys.stdout
+        self.stderr = stderr or sys.stderr
+        self._lock = threading.Lock()
+        self._log_lock = threading.Lock()
+        self._current_log_file: Path | None = None
+        self._spinner_visible = False
+        self._spinner_width = 0
+
+    def iteration_started(self, iteration: int, log_file: Path) -> None:
+        self._current_log_file = log_file
+        print(f"iteration {iteration}/{self.max_iterations}", file=self.stdout)
+        print(f"  log: {_display_path(log_file)}", file=self.stdout)
+
+    def iteration_completed(self, result: IterationResult) -> None:
+        print(f"iteration {result.iteration} result", file=self.stdout)
+        print(f"  changed files: {result.changed_files_count}", file=self.stdout)
+        print(f"  done: {'yes' if result.done else 'no'}", file=self.stdout)
+        print(f"  stop: {result.stop_reason or 'continue'}", file=self.stdout)
+        print(f"  log: {_display_path(result.log_file)}", file=self.stdout)
+        self._current_log_file = None
+
+    def run_command(
+        self,
+        args: list[str] | str,
+        *,
+        cwd: Path,
+        shell: bool = False,
+        text: bool = True,
+        capture_output: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        if not text or not capture_output:
+            return subprocess.run(
+                args,
+                cwd=str(cwd),
+                shell=shell,
+                text=text,
+                capture_output=capture_output,
+            )
+
+        process = subprocess.Popen(
+            args,
+            cwd=str(cwd),
+            shell=shell,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        threads = [
+            threading.Thread(
+                target=self._drain_stream,
+                args=(process.stdout, stdout_chunks, self.stdout, "stdout"),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=self._drain_stream,
+                args=(process.stderr, stderr_chunks, self.stderr, "stderr"),
+                daemon=True,
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+
+        started = time.monotonic()
+        frame = 0
+        if self.stderr.isatty():
+            while process.poll() is None:
+                self._render_spinner(frame, time.monotonic() - started)
+                frame += 1
+                time.sleep(0.1)
+            self._clear_spinner()
+        else:
+            print("  Codex running...", file=self.stderr)
+            while process.poll() is None:
+                time.sleep(0.2)
+
+        returncode = process.wait()
+        for thread in threads:
+            thread.join()
+
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=returncode,
+            stdout="".join(stdout_chunks),
+            stderr="".join(stderr_chunks),
+        )
+
+    def _drain_stream(
+        self,
+        stream: TextIO | None,
+        chunks: list[str],
+        target: TextIO,
+        stream_name: str,
+    ) -> None:
+        if stream is None:
+            return
+        try:
+            for line in iter(stream.readline, ""):
+                chunks.append(line)
+                self._append_log_output(stream_name, line)
+                if self.verbose:
+                    self._write_stream(target, line)
+        finally:
+            stream.close()
+
+    def _append_log_output(self, stream_name: str, text: str) -> None:
+        if self._current_log_file is None:
+            return
+        with self._log_lock:
+            append_iteration_log_output(
+                path=self._current_log_file,
+                stream_name=stream_name,
+                text=text,
+            )
+
+    def _render_spinner(self, frame: int, elapsed: float) -> None:
+        line = f"  {self._FRAMES[frame % len(self._FRAMES)]} Codex running {_format_elapsed(elapsed)}"
+        with self._lock:
+            self.stderr.write("\r" + line)
+            self.stderr.flush()
+            self._spinner_visible = True
+            self._spinner_width = len(line)
+
+    def _clear_spinner(self) -> None:
+        with self._lock:
+            self._clear_spinner_locked()
+
+    def _clear_spinner_locked(self) -> None:
+        if not self._spinner_visible:
+            return
+        self.stderr.write("\r" + (" " * self._spinner_width) + "\r")
+        self.stderr.flush()
+        self._spinner_visible = False
+        self._spinner_width = 0
+
+    def _write_stream(self, target: TextIO, text: str) -> None:
+        with self._lock:
+            self._clear_spinner_locked()
+            target.write(text)
+            target.flush()
+
+
+def _format_elapsed(seconds: float) -> str:
+    total = int(seconds)
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(path)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
