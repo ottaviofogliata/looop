@@ -103,8 +103,6 @@ class CoreTests(unittest.TestCase):
                 "gpt-5.5",
                 "--config",
                 "model_reasoning_effort=xhigh",
-                "--config",
-                "service_tier=flex",
                 "do one thing",
             ],
         )

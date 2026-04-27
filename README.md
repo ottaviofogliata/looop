@@ -158,7 +158,7 @@ max iterations: 20
 codex bin: codex
 Codex model: gpt-5.5
 Codex reasoning effort: xhigh
-Codex service tier: flex (no fast)
+Codex service tier: Codex default/user config
 stop on no changes: true
 prompt file: .looop/prompt.md
 progress file: .looop/progress.md
@@ -168,10 +168,10 @@ log dir: .looop/logs
 By default, Looop invokes Codex as if these Codex options were present:
 
 ```bash
---model gpt-5.5 --config model_reasoning_effort=xhigh --config service_tier=flex
+--model gpt-5.5 --config model_reasoning_effort=xhigh
 ```
 
-`service_tier=flex` is the non-fast Codex tier. Use `--codex-args` to override any of these defaults.
+Use `--codex-args` to override any of these defaults or to pass an explicit Codex service tier such as `--config service_tier=fast`.
 
 ## The `.looop/` Directory
 

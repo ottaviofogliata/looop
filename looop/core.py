@@ -19,7 +19,6 @@ DEFAULT_PROGRESS_PATH = Path(".looop/progress.md")
 DEFAULT_LOG_DIR = Path(".looop/logs")
 DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_REASONING_EFFORT = "xhigh"
-DEFAULT_SERVICE_TIER = "flex"
 
 
 class LooopError(RuntimeError):
@@ -216,8 +215,6 @@ def build_codex_command(codex_bin: str, codex_args: str, prompt: str) -> list[st
         default_args.extend(["--model", DEFAULT_CODEX_MODEL])
     if not _has_config_arg(extra_args, "model_reasoning_effort"):
         default_args.extend(["--config", f"model_reasoning_effort={DEFAULT_REASONING_EFFORT}"])
-    if not _has_config_arg(extra_args, "service_tier"):
-        default_args.extend(["--config", f"service_tier={DEFAULT_SERVICE_TIER}"])
 
     return [codex_bin, "exec", *default_args, *extra_args, prompt]
 
