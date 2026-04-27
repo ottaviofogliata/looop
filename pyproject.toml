@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "looop"
+version = "0.1.0"
+description = "Looop is a lightweight autonomous coding loop for Codex: it picks one task, implements it, updates progress, and repeats until done."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Ottavio Fogliata" }
+]
+keywords = ["codex", "cli", "automation", "developer-tools"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Utilities"
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ottavio/looop"
+Issues = "https://github.com/ottavio/looop/issues"
+
+[project.scripts]
+looop = "looop.cli:main"
+lp = "looop.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["looop*"]
