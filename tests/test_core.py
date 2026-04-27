@@ -110,7 +110,7 @@ class CoreTests(unittest.TestCase):
     def test_command_construction_allows_codex_arg_overrides(self) -> None:
         command = core.build_codex_command(
             "codex",
-            "--model gpt-5.1-codex-max --config model_reasoning_effort=low --config service_tier=fast",
+            "--model gpt-5.1-codex-max --config model_reasoning_effort=low",
             "do one thing",
         )
         self.assertEqual(
@@ -122,8 +122,6 @@ class CoreTests(unittest.TestCase):
                 "gpt-5.1-codex-max",
                 "--config",
                 "model_reasoning_effort=low",
-                "--config",
-                "service_tier=fast",
                 "do one thing",
             ],
         )

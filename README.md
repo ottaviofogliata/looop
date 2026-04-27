@@ -140,13 +140,11 @@ Useful examples:
 ```bash
 looop run --codex-args "--model gpt-5.1-codex-max"
 looop run --codex-args "--config model_reasoning_effort=high"
-looop run --codex-args "--config service_tier=fast"
 looop status
 looop clean --yes
 
 lp run --codex-args "--model gpt-5.1-codex-max"
 lp run --codex-args "--config model_reasoning_effort=high"
-lp run --codex-args "--config service_tier=fast"
 lp status
 lp clean --yes
 ```
@@ -158,7 +156,6 @@ max iterations: 20
 codex bin: codex
 Codex model: gpt-5.5
 Codex reasoning effort: xhigh
-Codex service tier: Codex default/user config
 stop on no changes: true
 prompt file: .looop/prompt.md
 progress file: .looop/progress.md
@@ -171,7 +168,7 @@ By default, Looop invokes Codex as if these Codex options were present:
 --model gpt-5.5 --config model_reasoning_effort=xhigh
 ```
 
-Use `--codex-args` to override any of these defaults or to pass an explicit Codex service tier such as `--config service_tier=fast`.
+Use `--codex-args` to override any of these defaults.
 
 ## The `.looop/` Directory
 
